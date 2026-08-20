@@ -6,3 +6,5 @@ NTPWEdit (NT Password Editor) is an open-source utility that can be used to chan
 # Modifications
 * Added reference to this repository in the about window
 * Updated version number from 0.7 to 0.7a
+* Added **Backup SAM** button — copies the SAM file to a chosen location preserving all file attributes (creation time, access time, write time, file attributes)
+* Added **Restore SAM** button — replaces the current SAM file from a backup preserving all file attributes, with confirmation prompt and automatic re-open
