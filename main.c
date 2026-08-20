@@ -54,11 +54,17 @@ static INT_PTR Button_PASS(
     HWND window, WORD id, UINT msg, WPARAM wParam, LPARAM lParam);
 static INT_PTR Button_SAVE(
     HWND window, WORD id, UINT msg, WPARAM wParam, LPARAM lParam);
+static INT_PTR Button_BACKUP(
+    HWND window, WORD id, UINT msg, WPARAM wParam, LPARAM lParam);
+static INT_PTR Button_RESTORE(
+    HWND window, WORD id, UINT msg, WPARAM wParam, LPARAM lParam);
 static INT_PTR ListProc(
     HWND window, WORD id, UINT msg, WPARAM wParam, LPARAM lParam);
 static INT_PTR Button_ABOUT(
     HWND window, WORD id, UINT msg, WPARAM wParam, LPARAM lParam);
 static BOOL OpenDialog(HWND window, char *namebuf, int bufsize);
+static BOOL SaveDialog(HWND window, char *namebuf, int bufsize);
+static BOOL CopyFilePreserveAttribs(const char *src, const char *dst);
 static int ListUsers(HWND window, char *path);
 static void ListInsert(HWND window, WORD id, int pos, int rid, WCHAR *name);
 static void ListDeleteAll(HWND window, WORD id);
@@ -94,6 +100,10 @@ enum
     ID_BUTTON_UNLOCK,
     ID_SPACER_UNLOCK,
     ID_BUTTON_PASS,
+    ID_GRP_BACKUP,
+    ID_BUTTON_BACKUP,
+    ID_SPACER_BACKUP,
+    ID_BUTTON_RESTORE,
     ID_GRP_BUTTON,
     ID_SPACER_OK,
     ID_BUTTON_SAVE,
@@ -118,6 +128,11 @@ static struct DLG_Item Items[]=
     {&CtlButton, ID_BUTTON_UNLOCK, L"Unlock", 0, ID_GRP_ACTIONS, Button_UNLOCK},
     {&CtlGroupBoxSpacer, ID_SPACER_UNLOCK, NULL, 0, ID_GRP_ACTIONS, NULL},
     {&CtlButton, ID_BUTTON_PASS, L"Change password", 0, ID_GRP_ACTIONS, Button_PASS},
+
+    {&CtlGroupBoxH, ID_GRP_BACKUP, NULL, 0, 0, NULL},
+    {&CtlButton, ID_BUTTON_BACKUP, L"Backup SAM", 0, ID_GRP_BACKUP, Button_BACKUP},
+    {&CtlGroupBoxSpacer, ID_SPACER_BACKUP, NULL, 0, ID_GRP_BACKUP, NULL},
+    {&CtlButton, ID_BUTTON_RESTORE, L"Restore SAM", 0, ID_GRP_BACKUP, Button_RESTORE},
 
     {&CtlGroupBoxH, ID_GRP_BUTTON, NULL, 0, 0, NULL},
     {&CtlButton, ID_BUTTON_SAVE, L"Save changes", 0, ID_GRP_BUTTON, Button_SAVE},
@@ -213,13 +228,14 @@ static INT_PTR Edit_PATH(
 
     if(WM_INITDIALOG==msg || (WM_COMMAND==msg && EN_CHANGE==HIWORD(wParam)))
         {
+        BOOL valid;
         GetDlgItemText(window, ID_EDIT_PATH, path, sizeof(path));
         attr=GetFileAttributes(path);
-        if(0xFFFFFFFF!=attr &&
-            FILE_ATTRIBUTE_DIRECTORY!=(attr&FILE_ATTRIBUTE_DIRECTORY))
-            EnableWindow(GetDlgItem(window, ID_BUTTON_OPEN), TRUE);
-        else
-            EnableWindow(GetDlgItem(window, ID_BUTTON_OPEN), FALSE);
+        valid=(0xFFFFFFFF!=attr &&
+            FILE_ATTRIBUTE_DIRECTORY!=(attr&FILE_ATTRIBUTE_DIRECTORY));
+        EnableWindow(GetDlgItem(window, ID_BUTTON_OPEN), valid);
+        EnableWindow(GetDlgItem(window, ID_BUTTON_BACKUP), valid);
+        EnableWindow(GetDlgItem(window, ID_BUTTON_RESTORE), valid);
         return TRUE;
         }
 
@@ -357,6 +373,146 @@ static INT_PTR Button_SAVE(
         SendMessage(window, WM_NEXTDLGCTL,
             (WPARAM)GetDlgItem(window, IDCANCEL), TRUE);
         CheckSave(window);
+        }
+
+    return FALSE;
+    }
+
+static BOOL CopyFilePreserveAttribs(const char *src, const char *dst)
+    {
+    HANDLE hSrc;
+    HANDLE hDst;
+    FILETIME ftCreate, ftAccess, ftWrite;
+    DWORD attrs;
+
+    attrs=GetFileAttributes(src);
+
+    hSrc=CreateFile(src, GENERIC_READ, FILE_SHARE_READ|FILE_SHARE_WRITE,
+        NULL, OPEN_EXISTING, 0, NULL);
+    if(INVALID_HANDLE_VALUE==hSrc)
+        return FALSE;
+
+    if(!GetFileTime(hSrc, &ftCreate, &ftAccess, &ftWrite))
+        {
+        CloseHandle(hSrc);
+        return FALSE;
+        }
+    CloseHandle(hSrc);
+
+    if(!CopyFile(src, dst, FALSE))
+        return FALSE;
+
+    hDst=CreateFile(dst, FILE_WRITE_ATTRIBUTES, 0,
+        NULL, OPEN_EXISTING, 0, NULL);
+    if(INVALID_HANDLE_VALUE!=hDst)
+        {
+        SetFileTime(hDst, &ftCreate, &ftAccess, &ftWrite);
+        CloseHandle(hDst);
+        }
+
+    if(INVALID_FILE_ATTRIBUTES!=attrs)
+        SetFileAttributes(dst, attrs);
+
+    return TRUE;
+    }
+
+static BOOL SaveDialog(HWND window, char *namebuf, int bufsize)
+    {
+    static OPENFILENAME ofn;
+
+    if(0==ofn.lStructSize)
+        {
+        ofn.lStructSize=sizeof(ofn);
+        ofn.hInstance=NULL;
+        ofn.lpstrFilter="SAM file\0SAM\0All files\0*.*\0";
+        ofn.lpstrCustomFilter=NULL;
+        ofn.nMaxCustFilter=0;
+        ofn.nFilterIndex=0;
+        ofn.lpstrFileTitle=NULL;
+        ofn.nMaxFileTitle=0;
+        ofn.lpstrInitialDir=NULL;
+        ofn.lpstrTitle="Save SAM backup as";
+        ofn.Flags=OFN_OVERWRITEPROMPT|OFN_LONGNAMES|OFN_EXPLORER;
+        ofn.nFileOffset=0;
+        ofn.nFileExtension=0;
+        ofn.lpstrDefExt=NULL;
+        ofn.lCustData=0;
+        ofn.lpfnHook=NULL;
+        ofn.lpTemplateName=NULL;
+        }
+    ofn.hwndOwner=window;
+    ofn.lpstrFile=namebuf;
+    ofn.nMaxFile=bufsize;
+
+    return GetSaveFileName(&ofn);
+    }
+
+static INT_PTR Button_BACKUP(
+    HWND window, WORD id, UINT msg, WPARAM wParam, LPARAM lParam)
+    {
+    (void)id; /* Unused */
+    (void)wParam; /* Unused */
+    (void)lParam; /* Unused */
+
+    if(WM_COMMAND==msg)
+        {
+        char src[MAX_PATH];
+        char dst[MAX_PATH];
+
+        GetDlgItemText(window, ID_EDIT_PATH, src, sizeof(src));
+        dst[0]='\0';
+
+        if(SaveDialog(window, dst, sizeof(dst)))
+            {
+            if(CopyFilePreserveAttribs(src, dst))
+                AppMessageBox(window, L"Backup saved successfully!", MB_OK);
+            else
+                AppMessageBox(window, L"Backup failed!", MB_OK);
+            }
+        return TRUE;
+        }
+
+    return FALSE;
+    }
+
+static INT_PTR Button_RESTORE(
+    HWND window, WORD id, UINT msg, WPARAM wParam, LPARAM lParam)
+    {
+    (void)id; /* Unused */
+    (void)wParam; /* Unused */
+    (void)lParam; /* Unused */
+
+    if(WM_COMMAND==msg)
+        {
+        char dst[MAX_PATH];
+        char src[MAX_PATH];
+
+        GetDlgItemText(window, ID_EDIT_PATH, dst, sizeof(dst));
+        src[0]='\0';
+
+        if(OpenDialog(window, src, sizeof(src)))
+            {
+            if(IDYES==AppMessageBox(window,
+                L"Replace current SAM file with backup?\n\n"
+                L"All unsaved changes will be lost!", MB_YESNO))
+                {
+                close_hives();
+                ListDeleteAll(window, ID_LIST_USERS);
+                DisableUserOptions(window);
+
+                if(CopyFilePreserveAttribs(src, dst))
+                    {
+                    AppMessageBox(window,
+                        L"SAM file restored successfully!", MB_OK);
+                    SendMessage(window, WM_COMMAND, ID_BUTTON_OPEN, 0);
+                    }
+                else
+                    AppMessageBox(window, L"Restore failed!", MB_OK);
+
+                CheckSave(window);
+                }
+            }
+        return TRUE;
         }
 
     return FALSE;
